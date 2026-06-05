@@ -1,0 +1,10 @@
+[package]
+name = "loupe-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Safe Rust bindings to the loupe C library for face detection and OCR"
+license = "MIT"
+
+[build-dependencies]
+flate2 = "1"
+tar = "0.4"
