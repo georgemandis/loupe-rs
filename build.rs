@@ -39,7 +39,14 @@ fn main() {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let lib_path = out_dir.join(lib_file);
 
-    if lib_path.exists() {
+    // On Windows the linker needs loupe.lib (import lib), not just the DLL.
+    let cache_ok = if target_os == "windows" {
+        lib_path.exists() && out_dir.join("loupe.lib").exists()
+    } else {
+        lib_path.exists()
+    };
+
+    if cache_ok {
         println!("cargo:rustc-link-search=native={}", out_dir.display());
         println!("cargo:rustc-link-lib={}=loupe", link_kind);
         link_frameworks(&target_os);
@@ -91,6 +98,11 @@ fn main() {
         std::fs::copy(&extracted_lib, &lib_path).unwrap();
     }
 
+    // On Windows, generate an import .lib from the DLL since the release only ships the DLL.
+    if target_os == "windows" {
+        generate_import_lib(&out_dir);
+    }
+
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     println!("cargo:rustc-link-lib={}=loupe", link_kind);
     link_frameworks(&target_os);
@@ -103,6 +115,54 @@ fn link_frameworks(target_os: &str) {
             "CoreVideo", "Foundation", "AppKit",
         ] {
             println!("cargo:rustc-link-lib=framework={}", fw);
+        }
+    }
+}
+
+/// On Windows, the loupe release ships only a .dll without an import .lib.
+/// Generate one from a .def file so the MSVC linker can resolve symbols.
+fn generate_import_lib(out_dir: &PathBuf) {
+    let def_path = out_dir.join("loupe.def");
+    std::fs::write(&def_path, "\
+LIBRARY loupe\n\
+EXPORTS\n\
+    loupe_load_image\n\
+    loupe_free_image\n\
+    loupe_save_image\n\
+    loupe_detect_faces\n\
+    loupe_blur_faces\n\
+    loupe_recognize_text\n\
+    loupe_free_ocr_results\n\
+    loupe_free\n\
+").expect("failed to write loupe.def");
+
+    let lib_output = out_dir.join("loupe.lib");
+
+    // Try lib.exe first (MSVC toolchain)
+    let status = std::process::Command::new("lib")
+        .arg(format!("/DEF:{}", def_path.display()))
+        .arg(format!("/OUT:{}", lib_output.display()))
+        .arg("/MACHINE:X64")
+        .arg("/NOLOGO")
+        .status();
+
+    match status {
+        Ok(s) if s.success() => return,
+        _ => {}
+    }
+
+    // Fallback: try dlltool (MinGW / MSYS2)
+    let status = std::process::Command::new("dlltool")
+        .args(["-d"])
+        .arg(&def_path)
+        .args(["-l"])
+        .arg(&lib_output)
+        .status();
+
+    match status {
+        Ok(s) if s.success() => return,
+        _ => {
+            panic!("failed to generate loupe.lib — neither lib.exe nor dlltool available");
         }
     }
 }
